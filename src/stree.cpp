@@ -4,6 +4,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
 #include <map>
 #include <string>
 #include <vector>
@@ -51,6 +52,13 @@ void usage()
     "  -p\n"
     "      Use parentheses to reveal structure, e.g. turning \"foo\", \"bar\", \"baz\"\n"
     "      into \"((foo)(ba(r)(z)))\"\n"
+    "  -b\n"
+    "      Use bash brace expansion format, e.g. turning \"foo\", \"bar\", \"baz\"\n"
+    "      into \"{foo,ba{r,z}}\n"
+    "  -g\n"
+    "      Create representation suitable for graphviz, e.g. turning \"foo\", \"bar\", \"baz\"\n"
+    "      into \"digraph { foo;ba->{r;z}}\"\n"
+    "\n"
     "\n"
     "  -f	Prepend the frequency to each line of output. Also sorts by frequency,\n"
     "      unless -a is also used.\n"
@@ -65,10 +73,6 @@ void usage()
     "AUTHOR\n"
     "  Benjamin King (benjaminking@web.de)\n";
   exit( 1 );
-
-  ///// TODO @@@ Fix logic for bash output
-  /////  "\n"
-  /////  "  -b	Like -p, but using bash syntax, e.g. \"{foo,bar{r,z}}\"\n"
 }
 
 /*
@@ -95,11 +99,13 @@ enum structureStyle_t
 {
   linewise,
   parentheses,
-  bash
+  bash,
+  graphviz
 };
 static structureStyle_t structureStyle = linewise;
 void setParentheses() { structureStyle = parentheses; }
 void setBash() { structureStyle = bash; }
+void setGraphviz() { structureStyle = graphviz; }
 
 /*
   A charNode_c represents a node in the trie of strings.
@@ -151,127 +157,123 @@ void read( std::istream &in, charNode_c &root )
 
   if 'c' is NUL, node is assumed to be the root of the prefix tree.
 */
-void dump( const charNode_c *node, const char c, std::string prefix )
+void dump( std::ostream &out, std::string current, std::string prefix,
+           const charNode_c *node, bool isRootNode )
 {
   // Nodes need to exist
   if ( !node || !node->count() ) return;
 
-  if ( structureStyle == parentheses )
-    printf( "(" );
-  else if ( structureStyle == bash )
-    printf( "{" );
+  // If there is just one possible an non-optional continuation of the string, we do not want to put
+  // it on an extra line, but add it to the current one.
+  //
+  // We can only do this if...
+  if ( node->next().size() == 1 &&             // ...there is only one way to contiune and...
+       node->next().begin()->second.count() == // ...the current string can not end here.
+       node->count() )
+  {
+    // We implement this by recursion
+    dump( out, current + node->next().begin()->first, prefix,
+          &node->next().begin()->second, isRootNode );
+    return;
+  }
 
+  // The root node in graphviz needs special consideration
+  if ( isRootNode && structureStyle == graphviz )
+     out << "digraph {";
+
+  // Invariants at this point:
+  // - The way root -> node represents the string prefix+current of which the prefix part has
+  //   already been printed, but the current part has not.
+  // - prefix+current is a complete string from the input data set, or it is the longest
+  //   common prefix of at least two such strings.
+
+  // Some output formats require that we surround the current string with something:
+  if ( structureStyle == parentheses )
+    out << "(";
+
+  // print current string, possible repeating the prefix along the way, and decorate the thing with
+  // frequencies.
   if ( prependFrequency )
-    printf( "%-8i ", node->count() );
+  {
+    if ( structureStyle == linewise )
+      out << std::setw( 8 ) << std::left; // neat vertical alignment
+    out << node->count();
+    if ( !current.empty() )
+       out << " ";
+  }
 
   if ( repeatPrefix )
-    // Repeat the prefix
-    printf( "%s", prefix.c_str() );
+    out << prefix << current;
   else if ( structureStyle == linewise )
     // Use whitespace instead
-    printf( "%s", std::string( prefix.length(), ' ' ).c_str() );
+    out << std::string( prefix.length(), ' ' ) << current;
   else
-  {
-    // Do not print anything at all
-  }
+    out << current;
 
-  // If this is not the root node, there is a character to print. It is also appended to the prefix
-  // for later subnodes.
-  if ( c )
-  {
-    printf( "%c", c );
-    prefix += c;
-  }
-
-  /*
-    As long as there is just a single character following with the same count of strings, it should
-    be added to the current line instead of doing a proper recursion, e.g. the strings "foo", "bar",
-    "baz" will give
-      foo
-      ba
-        r
-        z
-    and not
-      f
-       o
-        o
-      b
-       a
-        r
-        z
-   This is handled by the following while loop.
-  */
-  charNodes_c::const_iterator it = node->next().begin();
-  while ( it != node->next().end() )
-  {
-    if ( it->second.count() == node->count() )
-    {
-      // Since node->count() >= the sum of counts of all its children, this means that there is only
-      // on possible and mandatory continuation for node. We will print it in the same line.
-      printf( "%c", it->first );
-      prefix += it->first;
-      // Reset node and loop iterator to the next node
-      node = &it->second;
-      it = node->next().begin();
-    }
-    else
-    {
-      // dump children recursively
-      if ( appendFrequency )
-      {
-        if ( c )
-          printf( " " );
-        printf( "%i", node->count() );
-      }
-
-      if ( structureStyle == linewise )
-        printf( "\n" );
-
-      std::vector< charNodes_c::const_iterator > children;
-      for ( ;it != node->next().end(); ++it )
-        children.push_back( it );
-
-      // Sort by frequency if is visible unless the user says no
-      if ( ( prependFrequency || appendFrequency ) && !forceAlphabetically )
-        sort( children.begin(), children.end(), orderByCount );
-
-      std::vector< charNodes_c::const_iterator >::const_iterator cit;
-      for ( cit = children.begin(); cit != children.end(); ++cit )
-      {
-        if ( structureStyle == bash && cit != children.begin() )
-          printf( "," );
-        dump( &(*cit)->second, (*cit)->first, prefix );
-      }
-
-      if ( structureStyle == parentheses )
-        printf( ")" );
-      if ( structureStyle == bash )
-        printf( "}" );
-      //if ( !c && structureStyle != linewise )
-      //  printf( "\n" );
-
-      // And we are done
-      return;
-    }
-  }
-
-  // Only when no childs had to be written recursively
   if ( appendFrequency )
   {
-    if ( c )
-      printf( " " );
-    printf( "%i", node->count() );
+    if ( !current.empty() || prependFrequency )
+      out << " ";
+    out << node->count();
   }
 
-  switch ( structureStyle )
+  if ( structureStyle == linewise )
+    out << "\n";
+
+  // We may need to recurse.
+  if ( !node->next().empty() )
   {
-    case parentheses: printf( ")" ); break;
-    case bash: printf( "}" ); break;
-    default: printf( "\n" );
+    if ( structureStyle == graphviz && !current.empty() )
+      out << " -> {";
+    if ( structureStyle == bash )
+    {
+      // bash output compresses "foo foolish" to "foo{,lish}". To determine if node represents a
+      // string in its own right, we check if is more often in the input data set than the sum of
+      // the children.
+      std::size_t nextCount = 0;
+      for ( charNodes_c::const_iterator it = node->next().begin();
+            it != node->next().end();
+            ++it )
+        nextCount += it->second.count();
+      if ( nextCount < node->count() )
+        out << "{,";
+      else
+        out << "{";
+    }
+
+    // Now dump each child, sorted by frequency if is visible unless the user says no
+    std::vector< charNodes_c::const_iterator > children;
+    for ( charNodes_c::const_iterator it = node->next().begin();
+          it != node->next().end();
+          ++it )
+      children.push_back( it );
+    if ( ( prependFrequency || appendFrequency ) && !forceAlphabetically )
+      sort( children.begin(), children.end(), orderByCount );
+    std::vector< charNodes_c::const_iterator >::const_iterator cit;
+    for ( cit = children.begin(); cit != children.end(); ++cit )
+    {
+      if ( cit != children.begin() )
+        if ( structureStyle == graphviz )
+          out << ";";
+        else if ( structureStyle == bash )
+          out << ",";
+
+      dump( out, std::string( 1, ( *cit )->first ), prefix + current,
+            &( *cit )->second, false );
+    }
+    if ( structureStyle == graphviz && !current.empty() ||
+         structureStyle == bash )
+      out << "}";
   }
 
-  if ( !c && structureStyle != linewise )
-    printf( "\n" );
+  if ( structureStyle == parentheses )
+    out << ")";
+  if ( isRootNode )
+  {
+    if ( structureStyle == graphviz || ( structureStyle == bash && !isRootNode ) )
+      out << "}";
+    out << "\n";
+  }
 }
 
 int main( int argc, char *argv[] )
@@ -282,8 +284,8 @@ int main( int argc, char *argv[] )
   optionSetter[ "-f" ] = setPrependFrequency;
   optionSetter[ "-F" ] = setAppendFrequency;
   optionSetter[ "-p" ] = setParentheses;
-  ///// TODO @@@ Does not work correctly (dreaded commas...)
-  /////optionSetter[ "-b" ] = setBash;
+  optionSetter[ "-b" ] = setBash;
+  optionSetter[ "-g" ] = setGraphviz;
 
   int i;
   for ( i = 1; i < argc; ++i )
@@ -316,5 +318,5 @@ int main( int argc, char *argv[] )
     }
   }
 
-  dump( &root, '\000', "" );
+  dump( std::cout, "", "", &root, true );
 }
