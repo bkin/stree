@@ -9,7 +9,7 @@
 #include <vector>
 
 static bool printFrequency = true;
-static bool printPrefix = true;    // Bei false statt dessen nur Whitespace
+static bool printPrefix = true;
 
 void usage()
 {
@@ -316,6 +316,5 @@ int main( int argc, char *argv[] )
     }
   }
 
-  // Baum ausgeben
   dump( &root, '\000', "" );
 }
